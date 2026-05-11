@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/settings.json.local
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Kimi CLI sessions
+.kimi/sessions/
+.kimi
+.vscode
