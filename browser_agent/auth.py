@@ -1,13 +1,14 @@
 """
-登录状态管理模块
+登录状态管理模块（多平台支持）
 负责：
-- Cookie的保存和加载
+- 按平台隔离的 Cookie/Storage 保存和加载
 - 登录状态检测
-- 首次登录时打开浏览器让用户手动登录
+- 首次登录时打开浏览器让用户手动登录（QoL: 自动点击登录按钮 + 自动检测关闭）
 """
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -15,29 +16,39 @@ import playwright.sync_api as pw
 
 
 class AuthManager:
-    """管理Kimi网页版的登录状态。"""
+    """管理各平台的登录状态。"""
 
-    KIMI_DOMAIN = "kimi.moonshot.cn"
-    LOGIN_URL = "https://kimi.moonshot.cn"
-
-    def __init__(self, state_dir: Optional[Path] = None):
+    def __init__(self, platform: str = "kimi", state_dir: Optional[Path] = None):
         """
         Args:
-            state_dir: 存储认证状态的目录，默认使用用户主目录下的 .kimireader/
+            platform: 平台标识 (kimi/deepseek/chatgpt)
+            state_dir: 存储认证状态的根目录，默认 ~/.kimireader/
         """
+        self.platform = platform.lower().strip()
         if state_dir is None:
             state_dir = Path.home() / ".kimireader"
-        self.state_dir = state_dir
+        self.state_dir = state_dir / self.platform
         self.state_dir.mkdir(parents=True, exist_ok=True)
-        self.cookie_file = self.state_dir / "cookies.json"
         self.storage_state_file = self.state_dir / "storage_state.json"
 
-    def is_logged_in(self, browser_type: str = "chromium") -> bool:
-        """检测是否已保存有效登录状态。"""
+    def is_logged_in(self, browser_type: str = "chromium", login_url: str = "") -> bool:
+        """检测是否已保存有效登录状态。
+        如果检测到无效状态，会自动清除 state 文件。"""
         if not self.storage_state_file.exists():
             return False
 
-        # 尝试用storage state打开一个无痕页面验证
+        # 检查文件是否为空
+        try:
+            stat = self.storage_state_file.stat()
+            if stat.st_size < 10:
+                self.storage_state_file.unlink()
+                return False
+        except Exception:
+            return False
+
+        url = login_url or self._get_default_login_url()
+        result = False
+
         try:
             with pw.sync_playwright() as p:
                 browser_cls = getattr(p, browser_type)
@@ -46,91 +57,155 @@ class AuthManager:
                     storage_state=str(self.storage_state_file)
                 )
                 page = context.new_page()
-                page.goto(self.LOGIN_URL, wait_until="domcontentloaded", timeout=15000)
-                page.wait_for_timeout(2000)
 
-                # 检测登录状态：未登录通常会重定向到登录页或显示登录按钮
-                # 已登录则能看到聊天界面或用户头像
-                url = page.url
-                if "/login" in url or "/auth" in url:
-                    browser.close()
-                    return False
+                # 使用 load 等待页面加载，避免 networkidle 因 analytics 长连接超时
+                try:
+                    page.goto(url, wait_until="load", timeout=30000)
+                except Exception:
+                    pass
+                page.wait_for_timeout(5000)  # 额外等待 JS 渲染
 
-                # 检查是否有用户相关元素（如头像、用户名、设置按钮等）
-                has_user_indicator = page.locator(
-                    '[class*="avatar"], [class*="user"], [class*="profile"], '
-                    'img[alt*="头像"], button:has-text("退出"), [class*="logout"]'
-                ).count() > 0
-
-                # 也检查localStorage中是否有token
-                token = page.evaluate("() => localStorage.getItem('token') || localStorage.getItem('access_token') || sessionStorage.getItem('token') || ''")
-
+                # 通用登录检测：复用 _check_login_indicators（已包含 URL 严格检查）
+                result = self._check_login_indicators(page)
                 browser.close()
-                return has_user_indicator or bool(token)
-        except Exception:
-            return False
+        except Exception as e:
+            print(f"[{self.platform}] Login check warning: {e}")
+            result = False
 
-    def login_interactive(self, browser_type: str = "chromium"):
+        # 如果检测失败，自动清理无效的 state 文件，避免用户卡住
+        if not result:
+            try:
+                if self.storage_state_file.exists():
+                    self.storage_state_file.unlink()
+                    print(f"[{self.platform}] 检测到无效登录状态，已自动清理。")
+            except Exception:
+                pass
+
+        return result
+
+    def login_interactive(self, browser_type: str = "chromium", login_url: str = "",
+                          platform_name: str = ""):
         """
         打开有界面的浏览器，自动点击登录按钮，并在登录成功后自动关闭。
-        QoL优化：自动触发登录流程，用户只需完成扫码/输密码，无需手动找登录入口。
         """
+        platform_display = platform_name or self.platform
+        url = login_url or self._get_default_login_url()
+
         print("=" * 60)
-        print("KimiReader 登录")
+        print(f"KimiReader 登录 - {platform_display}")
         print("=" * 60)
-        print(f"正在打开浏览器...")
+        print(f"正在打开 {url} ...")
         print("系统将自动点击登录按钮，请在新窗口中完成扫码或密码登录。")
         print("登录成功后浏览器会自动关闭。")
         print("=" * 60)
 
         with pw.sync_playwright() as p:
             browser_cls = getattr(p, browser_type)
-            browser = browser_cls.launch(headless=False)
-            context = browser.new_context()
+            # 反检测参数：隐藏自动化特征，降低被 Cloudflare 检测概率
+            launch_args = [
+                "--disable-blink-features=AutomationControlled",
+                "--disable-web-security",
+                "--disable-features=IsolateOrigins,site-per-process",
+            ]
+            browser = browser_cls.launch(
+                headless=False,
+                args=launch_args,
+            )
+            context = browser.new_context(
+                viewport={"width": 1920, "height": 1080},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            )
+            # 注入脚本移除 webdriver 标志
+            context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                window.chrome = { runtime: {} };
+            """)
             page = context.new_page()
-            page.goto(self.LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(2000)
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(3000)
 
-            # QoL 1: 自动点击登录按钮（如果存在）
+            # QoL: 自动点击登录按钮
             self._auto_click_login_button(page)
 
-            # QoL 2: 自动检测登录成功并关闭浏览器
+            # QoL: 自动检测登录成功并关闭
             self._wait_for_login_and_close(page, browser, context)
 
         print("登录状态已保存。")
 
     def _auto_click_login_button(self, page: pw.Page):
-        """自动检测并点击页面上的登录按钮。"""
-        login_button_selectors = [
-            # 通过文本内容匹配（中英文常见写法）
+        """自动检测并点击页面上的登录按钮。支持多次尝试（处理折叠菜单）。"""
+        # 先等待页面完全渲染（Kimi 新 UI 可能慢）
+        page.wait_for_timeout(3000)
+
+        login_selectors = [
+            # 文字按钮（中文优先）
             'button:has-text("登录")',
-            'button:has-text("登入")',
+            'button:has-text("登 录")',
+            'a:has-text("登录")',
+            'div:has-text("登录"):visible',
+            'button:has-text("Log in")',
             'button:has-text("Login")',
             'button:has-text("Sign in")',
             'button:has-text("立即登录")',
-            'a:has-text("登录")',
-            'a:has-text("登入")',
+            'a:has-text("Log in")',
             'a:has-text("Login")',
             'a:has-text("Sign in")',
-            'div:has-text("登录"):visible',
-            # 通过 class/name 特征匹配
+            # class / data-testid
             '[class*="login"]',
             '[class*="signin"]',
             '[class*="sign-in"]',
-            'button[type="button"]:has-text("登录")',
-            # 右上角/导航栏常见的登录入口
+            '[data-testid*="login"]',
+            # 位置（header/nav/右上角常见区域）
             'header [class*="login"]',
             'nav [class*="login"]',
+            'header button',
+            'header a',
+            '[class*="header"] button',
+            '[class*="top-bar"] button',
+            # SVG 图标旁的登录（Kimi 新 UI 可能用图标）
+            'button:has(svg):has-text("登录")',
+            'button:has(svg):has-text("Log")',
+            'a:has(svg):has-text("登录")',
         ]
 
-        for selector in login_button_selectors:
+        # 第一轮：直接匹配可见的登录按钮
+        for selector in login_selectors:
+            try:
+                btn = page.locator(selector).first
+                if btn.is_visible(timeout=2000):
+                    btn.click(timeout=5000)
+                    print("已自动点击登录按钮，请完成登录...")
+                    page.wait_for_timeout(2000)
+                    return
+            except Exception:
+                continue
+
+        # 第二轮：尝试点击可能是头像/用户菜单的按钮（有些 UI 登录在折叠菜单里）
+        menu_selectors = [
+            '[class*="avatar"]',
+            '[class*="user-menu"]',
+            'header img',
+            'nav img',
+            'button:has(img)',
+            '[class*="profile"]',
+        ]
+        for selector in menu_selectors:
             try:
                 btn = page.locator(selector).first
                 if btn.is_visible(timeout=1500):
-                    btn.click(timeout=5000)
-                    print("已自动点击登录按钮，请完成登录...")
-                    page.wait_for_timeout(2000)  # 等待登录弹窗/页面出现
-                    return
+                    btn.click(timeout=3000)
+                    page.wait_for_timeout(2000)
+                    # 点击后看看有没有弹出登录选项
+                    for login_sel in login_selectors:
+                        try:
+                            login_btn = page.locator(login_sel).first
+                            if login_btn.is_visible(timeout=1500):
+                                login_btn.click(timeout=5000)
+                                print("已通过菜单弹出登录选项...")
+                                return
+                        except Exception:
+                            continue
             except Exception:
                 continue
 
@@ -138,39 +213,53 @@ class AuthManager:
 
     def _wait_for_login_and_close(self, page: pw.Page, browser, context,
                                    timeout_seconds: int = 120):
-        """
-        轮询检测登录状态，登录成功后自动关闭浏览器。
-        检测指标：URL变化、token出现、用户头像出现、登录按钮消失。
-        """
-        import time
+        """轮询检测登录状态，登录成功后自动关闭浏览器。
+        包含二次验证，防止在登录跳转页误判。"""
         start_time = time.time()
-        check_interval = 2.0  # 每2秒检查一次
+        check_interval = 2.0
         last_status = ""
+        login_success = False
+        consecutive_success = 0
 
         try:
             while True:
                 elapsed = time.time() - start_time
                 if elapsed > timeout_seconds:
                     print(f"\n登录检测超时（{timeout_seconds}秒）。")
-                    print("将保存当前页面状态，如果已登录则可用，否则请重新运行登录。")
                     break
 
-                # 多种指标综合判断登录状态
                 is_logged_in = self._check_login_indicators(page)
 
                 if is_logged_in:
-                    print("\n检测到登录成功！正在保存状态并关闭浏览器...")
-                    # 再稍等片刻让cookie等状态稳定
-                    page.wait_for_timeout(2000)
-                    break
+                    # 二次验证：连续 2 次检测都成功才算真的登录成功
+                    # 防止登录跳转页的瞬态误判
+                    consecutive_success += 1
+                    if consecutive_success >= 2:
+                        # 最终确认：URL 不在登录页，且页面没有未登录提示
+                        current_url = page.url.lower()
+                        if any(p in current_url for p in ["/login", "/auth", "/signin", "/sso", "/passport"]):
+                            consecutive_success = 0
+                            continue
+                        try:
+                            page_text = page.locator("body").inner_text(timeout=2000)
+                            if "登录以同步" in page_text or "登录以继续" in page_text or "请登录" in page_text:
+                                consecutive_success = 0
+                                continue
+                        except Exception:
+                            pass
 
-                # 打印状态更新（避免用户觉得卡死）
+                        login_success = True
+                        print("\n检测到登录成功！等待状态稳定...")
+                        page.wait_for_timeout(5000)
+                        break
+                else:
+                    consecutive_success = 0
+
                 status = f"等待登录中... ({int(elapsed)}s/{timeout_seconds}s)"
                 if status != last_status:
                     print(status, end="\r", flush=True)
                     last_status = status
 
-                # 检查浏览器是否已被用户手动关闭
                 if page.is_closed():
                     print("\n浏览器已被手动关闭。")
                     break
@@ -180,76 +269,147 @@ class AuthManager:
         except Exception as e:
             print(f"\n检测过程出错: {e}")
         finally:
-            # 无论是否检测到登录成功，都保存当前storage state
-            # 因为用户可能已经登录了但检测逻辑没命中
+            # 保存 storage state
             try:
+                if login_success:
+                    print("等待 cookie 同步...")
+                    page.wait_for_timeout(8000)
                 context.storage_state(path=str(self.storage_state_file))
-            except Exception:
-                pass
+                print("登录状态已保存。")
+            except Exception as e:
+                print(f"保存登录状态时出错: {e}")
             try:
                 browser.close()
             except Exception:
                 pass
 
     def _check_login_indicators(self, page: pw.Page) -> bool:
-        """综合多种指标判断当前页面是否已登录。"""
+        """综合多种指标判断当前页面是否已登录。
+        严格防止在登录跳转页误判（Kimi/ChatGPT 常见问题）。"""
         try:
-            # 指标1: URL 不在登录相关路径
             url = page.url
-            if "/login" in url or "/auth" in url:
+            url_lower = url.lower()
+
+            # ========== 严格排除：如果 URL 明显是登录/认证页 ==========
+            login_paths = ["/login", "/auth", "/signin", "/sso", "/passport", "/sign-up", "/register"]
+            login_hosts = ["auth.", "passport.", "login.", "account.", "sso."]
+            if any(p in url_lower for p in login_paths):
+                return False
+            if any(h in url_lower for h in login_hosts):
                 return False
 
-            # 指标2: localStorage / sessionStorage 中有 token
-            token = page.evaluate(
-                "() => localStorage.getItem('token') || "
-                "localStorage.getItem('access_token') || "
-                "sessionStorage.getItem('token') || "
-                "localStorage.getItem('refresh_token') || ''"
-            )
-            if token and len(str(token)) > 10:
-                return True
+            # ========== 严格排除：页面有明显"未登录"提示 ==========
+            try:
+                page_text = page.locator("body").inner_text(timeout=2000)
+            except Exception:
+                page_text = ""
 
-            # 指标3: 页面上出现用户头像/用户名/退出按钮
-            has_user_element = page.locator(
-                '[class*="avatar"], [class*="user-name"], [class*="profile"], '
-                'img[alt*="头像"], [class*="logout"], button:has-text("退出")'
+            not_logged_markers = [
+                "登录以同步", "登录以继续", "请登录", "登录后",
+                "sign in to", "log in to", "please sign in",
+                "登录/注册", "登录账号", "扫码登录", "手机号登录",
+            ]
+            if any(m in page_text for m in not_logged_markers):
+                return False
+
+            # ========== 严格排除：有登录按钮且没有用户头像 ==========
+            has_login_btn = page.locator(
+                'button:has-text("登录"), a:has-text("登录"), '
+                'button:has-text("Log in"), a:has-text("Log in"), '
+                'button:has-text("Sign in"), a:has-text("Sign in"), '
+                '[class*="login-btn"], [class*="login-button"]'
             ).count() > 0
-            if has_user_element:
+            has_user_avatar = page.locator(
+                '[class*="avatar"], img[alt*="avatar"], img[alt*="User"], '
+                '[class*="user-menu"], [class*="profile"]'
+            ).count() > 0
+            if has_login_btn and not has_user_avatar:
+                return False
+
+            # ========== 正向检测1：localStorage / sessionStorage 中的有效 token ==========
+            token = page.evaluate(
+                "() => {"
+                "  const keys = ['token','access_token','refresh_token','jwt','auth_token',"
+                "    'user_token','api_key','credential','ds_token','ds_auth'];"
+                "  for (const k of keys) {"
+                "    const v = localStorage.getItem(k) || sessionStorage.getItem(k);"
+                "    if (v && v.length > 20) return v;"
+                "  }"
+                "  return '';"
+                "}"
+            )
+            if token and len(str(token)) > 20:
                 return True
 
-            # 指标4: 页面主内容区出现对话列表或输入框（已登录特征）
+            # ========== 正向检测2：document.cookie 中的有效会话 cookie ==========
+            # 改进：不再简单 includes，而是解析具体 cookie 名和值长度
+            has_real_session = page.evaluate(
+                "() => {"
+                "  const cookies = document.cookie.split(';');"
+                "  for (const c of cookies) {"
+                "    const idx = c.indexOf('=');"
+                "    if (idx < 0) continue;"
+                "    const name = c.slice(0, idx).trim().toLowerCase();"
+                "    const value = c.slice(idx + 1).trim();"
+                "    if (value.length < 16) continue;"
+                "    if (name.includes('cf_') || name.includes('_cfr') || name.includes('csrftoken')) continue;"
+                "    if (name.includes('session') || name.includes('token') || name.includes('auth')) return true;"
+                "  }"
+                "  return false;"
+                "}"
+            )
+            if has_real_session:
+                return True
+
+            # ========== 正向检测3：用户相关 DOM 元素 ==========
+            has_user = page.locator(
+                '[class*="avatar"], [class*="user-name"], [class*="profile"], '
+                'img[alt*="头像"], img[alt*="avatar"], img[alt*="User"], '
+                '[class*="logout"], button:has-text("退出"), button:has-text("Log out"), '
+                '[class*="account"], [class*="user-menu"]'
+            ).count() > 0
+            if has_user:
+                return True
+
+            # ========== 正向检测4：有聊天输入框且没有登录按钮 ==========
             has_chat_ui = page.locator(
                 '[class*="chat-input"], [class*="message-input"], '
-                'textarea[placeholder], [class*="conversation-list"]'
+                'textarea[placeholder], [class*="conversation-list"], '
+                '[class*="new-chat"], button:has-text("New chat")'
             ).count() > 0
-            # 但同时要确认没有登录按钮
-            has_login_button = page.locator(
-                'button:has-text("登录"), a:has-text("登录"), [class*="login-btn"]'
-            ).count() > 0
-            if has_chat_ui and not has_login_button:
+            if has_chat_ui and not has_login_btn:
                 return True
+
+            # ========== 正向检测5：页面包含已登录特有的文本 ==========
+            page_text_lower = page_text.lower()
+            logged_in_markers = [
+                "new chat", "new conversation", "start chat",
+                "退出", "log out", "logout", "settings", "设置",
+            ]
+            if any(m in page_text_lower for m in logged_in_markers):
+                if not has_login_btn:
+                    return True
 
             return False
         except Exception:
             return False
 
-    def ensure_login(self, browser_type: str = "chromium", force_relogin: bool = False):
-        """
-        确保已登录。如果未登录或force_relogin=True，则触发交互式登录。
-        """
-        if not force_relogin and self.is_logged_in(browser_type):
-            print("已检测到有效登录状态。")
+    def ensure_login(self, browser_type: str = "chromium", force_relogin: bool = False,
+                     login_url: str = "", platform_name: str = ""):
+        """确保已登录。"""
+        if not force_relogin and self.is_logged_in(browser_type, login_url):
+            print(f"[{self.platform}] 已检测到有效登录状态。")
             return
 
         if force_relogin:
-            print("强制重新登录...")
+            print(f"[{self.platform}] 强制重新登录...")
         else:
-            print("未检测到登录状态，需要手动登录。")
+            print(f"[{self.platform}] 未检测到登录状态，需要手动登录。")
 
-        self.login_interactive(browser_type)
+        self.login_interactive(browser_type, login_url, platform_name)
 
     def get_context_args(self) -> dict:
-        """返回用于创建browser context的参数（包含登录状态）。"""
+        """返回用于创建 browser context 的参数。"""
         args = {}
         if self.storage_state_file.exists():
             args["storage_state"] = str(self.storage_state_file)
@@ -257,16 +417,24 @@ class AuthManager:
 
     def logout(self):
         """清除保存的登录状态。"""
-        for f in [self.cookie_file, self.storage_state_file]:
-            if f.exists():
-                f.unlink()
-        print("已清除登录状态。")
+        if self.storage_state_file.exists():
+            self.storage_state_file.unlink()
+        print(f"[{self.platform}] 已清除登录状态。")
 
     def get_status(self) -> dict:
         """返回当前认证状态的摘要信息。"""
         return {
+            "platform": self.platform,
             "state_dir": str(self.state_dir),
-            "has_cookies": self.cookie_file.exists(),
             "has_storage_state": self.storage_state_file.exists(),
             "is_logged_in": self.is_logged_in(),
         }
+
+    def _get_default_login_url(self) -> str:
+        """根据平台返回默认登录URL。"""
+        urls = {
+            "kimi": "https://www.kimi.com",
+            "deepseek": "https://chat.deepseek.com",
+            "chatgpt": "https://chatgpt.com",
+        }
+        return urls.get(self.platform, f"https://{self.platform}.com")

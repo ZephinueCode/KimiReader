@@ -108,9 +108,20 @@ if (Test-Path $PluginTargetDir) {
     Remove-Item -Recurse -Force $PluginTargetDir
 }
 
-# Copy plugin files
-Copy-Item -Recurse -Path (Join-Path $ProjectRoot "plugin") -Destination $PluginTargetDir
-Write-Success "Plugin installed to $PluginTargetDir"
+# Step 4a: Copy plugin static config (plugin.json, config.json)
+$PluginSourceDir = Join-Path $ProjectRoot "plugin"
+Copy-Item -Recurse -Path $PluginSourceDir -Destination $PluginTargetDir
+Write-Success "Plugin static files installed"
+
+# Step 4b: Copy browser_agent code from project root (source of truth)
+# This ensures we always install the latest code, not stale copies in plugin/scripts/
+$BrowserAgentSource = Join-Path $ProjectRoot "browser_agent"
+$BrowserAgentTarget = Join-Path $PluginTargetDir "scripts\browser_agent"
+if (Test-Path $BrowserAgentTarget) {
+    Remove-Item -Recurse -Force $BrowserAgentTarget
+}
+Copy-Item -Recurse -Path $BrowserAgentSource -Destination $BrowserAgentTarget
+Write-Success "Browser agent code synced from $BrowserAgentSource"
 
 # ==================== 5. Install User-Level Skill ====================
 Write-Header "Step 5: Installing Agent Skill"
