@@ -128,7 +128,7 @@ class BasePlatform(ABC):
                         if href:
                             # 常见格式: /chat/xxx, /c/xxx, /g/xxx
                             import re
-                            match = re.search(r"/(chat|c|g)/([a-zA-Z0-9_-]+)", href)
+                            match = re.search(r"/(chat|c|g)/s?/([a-f0-9-]+|[a-zA-Z0-9_-]+)", href)
                             if match:
                                 sid = match.group(2)
                             url = f"https://{self.domain}{href}" if href.startswith("/") else href

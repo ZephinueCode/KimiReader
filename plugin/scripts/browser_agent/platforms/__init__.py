@@ -3,7 +3,7 @@
 支持: kimi (kimi.moonshot.cn), deepseek (chat.deepseek.com), chatgpt (chatgpt.com)
 """
 
-from .base import BasePlatform
+from .base import BasePlatform, ChatSession, ChatMessage
 from .kimi import KimiPlatform
 from .deepseek import DeepSeekPlatform
 from .chatgpt import ChatGPTPlatform

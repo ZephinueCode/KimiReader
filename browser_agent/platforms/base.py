@@ -65,6 +65,9 @@ class BasePlatform(ABC):
     # --- API 拦截相关 ---
     api_url_patterns: List[str] = []
 
+    # --- 单条会话 URL 模板 ---
+    session_url_template: str = "/c/{session_id}"
+
     def __init__(self):
         pass
 
@@ -95,6 +98,10 @@ class BasePlatform(ABC):
             return True
 
         return False
+
+    def get_session_url(self, session_id: str) -> str:
+        """构造单条会话的 URL。"""
+        return f"{self.login_url}{self.session_url_template.format(session_id=session_id)}"
 
     def get_login_button_selectors(self) -> List[str]:
         """返回登录按钮的选择器列表。"""
@@ -128,7 +135,7 @@ class BasePlatform(ABC):
                         if href:
                             # 常见格式: /chat/xxx, /c/xxx, /g/xxx
                             import re
-                            match = re.search(r"/(chat|c|g)/([a-zA-Z0-9_-]+)", href)
+                            match = re.search(r"/(chat|c|g)/s?/([a-f0-9-]+|[a-zA-Z0-9_-]+)", href)
                             if match:
                                 sid = match.group(2)
                             url = f"https://{self.domain}{href}" if href.startswith("/") else href

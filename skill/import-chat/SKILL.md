@@ -9,45 +9,81 @@ description: 从网页版Kimi/DeepSeek/ChatGPT自动拉取指定对话的聊天�
 
 ## 支持平台
 
-| 平台 | 域名 | 说明 |
-|------|------|------|
-| **kimi** | kimi.moonshot.cn | 默认平台 |
-| **deepseek** | chat.deepseek.com | DeepSeek |
-| **chatgpt** | chatgpt.com | ChatGPT |
+| 平台 | 域名 |
+|------|------|
+| **kimi** | kimi.moonshot.cn |
+| **deepseek** | chat.deepseek.com |
+| **chatgpt** | chatgpt.com |
 
 ## 使用流程
 
-### 步骤1：检查登录状态
+### 步骤1：询问用户选择平台
 
-调用 `kimi_login_status` 检查指定平台的登录状态。
+**必须先询问用户，不要直接假设使用 kimi。**
 
-### 步骤2：登录（如需要）
+使用 `AskUserQuestion` 工具展示平台选择：
 
-如果未登录，调用 `kimi_login`。系统会：
+```
+问题: 要从哪个平台导入聊天记录?
+选项:
+- Kimi (kimi.moonshot.cn)
+- DeepSeek (chat.deepseek.com)
+- ChatGPT (chatgpt.com)
+```
+
+根据用户选择确定 `platform` 参数值（kimi / deepseek / chatgpt）。
+
+### 步骤2：检查登录状态
+
+调用 `kimi_login_status`（带上步骤1确定的 `platform`）检查该平台是否已登录。
+
+### 步骤3：登录（如需要）
+
+如果未登录，调用 `kimi_login`（带上 `platform`）。系统会：
 1. 自动打开浏览器并访问对应平台
 2. **自动点击登录按钮**
-3. 你在弹出的登录表单/二维码中完成验证
+3. 用户在弹出的表单/二维码中完成验证
 4. **登录成功后浏览器自动关闭**，状态保存到 `~/.kimireader/{platform}/`
 
 各平台登录态相互独立，首次使用每个平台都需要分别登录。
 
-### 步骤3：列出历史对话
+### 步骤4：列出历史对话
 
-调用 `list_chat_sessions`。系统会：
+调用 `list_chat_sessions`（带上 `platform`）。系统会：
 - 自动点击"全部聊天记录"展开按钮
 - 滚动侧边栏加载更多（处理懒加载）
 - 最多返回 **30条** 对话
 
-### 步骤4：导入指定对话
+### 步骤5：展示对话列表并让用户选择
 
-使用 `import_chat_history` 导入。指定方式：
-- `index`: 从列表中选择的序号（0-based，最推荐）
-- `session_id`: 会话ID
-- `url`: 完整URL
+**先以普通文本形式列出全部对话标题（带序号 0-29），让用户能看到完整列表。**
 
-### 步骤5：展示结果
+例如：
+```
+找到以下对话（共 X 条）：
+[0] 第一条对话标题
+[1] 第二条对话标题
+...
+[29] 第三十条对话标题
+```
 
-将导入的 `full_text` 展示给用户，或启动子Agent进一步分析。
+然后用 `AskUserQuestion` 提供操作选项：
+- 导入全部
+- 只导入最新的（index 0）
+- 我自己回复序号来选择
+- 取消
+
+如果用户选择"我自己回复序号来选择"，等待用户在下一条消息中回复序号（支持多选，如 "0,2,5"）。
+
+如果用户选择"导入全部"，依次调用 `import_chat_history` 导入所有对话，将结果合并展示。
+
+### 步骤6：导入指定对话
+
+调用 `import_chat_history`（带上 `platform` 和 `index`）。
+
+### 步骤7：展示结果
+
+将导入的 `full_text` 展示给用户，或根据用户需求启动子Agent进一步分析。
 
 ## 快捷命令
 
@@ -55,16 +91,11 @@ description: 从网页版Kimi/DeepSeek/ChatGPT自动拉取指定对话的聊天�
 /skill:导入聊天记录
 ```
 
-或指定平台：
-
-```
-/skill:导入聊天记录 从DeepSeek导入
-/skill:导入聊天记录 从ChatGPT导入最新的对话
-```
+用户输入此命令后，AI 应**立即询问平台**，而不是默认使用 Kimi。
 
 ## 注意事项
 
+- **必须先问平台**：不要默认使用 kimi，三平台完全对等
 - 各平台登录状态独立保存，首次使用每个平台都需登录
 - 登录态通常持久数月，过期后需重新登录
 - 导入的长对话会占用上下文token，建议对过长的对话先做筛选
-- 如果网页版DOM结构大幅变更，可能需要更新平台适配器

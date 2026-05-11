@@ -36,7 +36,16 @@ class AuthManager:
         if not self.storage_state_file.exists():
             return False
 
+        # 检查文件是否为空
+        try:
+            stat = self.storage_state_file.stat()
+            if stat.st_size < 10:
+                return False
+        except Exception:
+            return False
+
         url = login_url or self._get_default_login_url()
+        result = False
 
         try:
             with pw.sync_playwright() as p:
@@ -46,34 +55,24 @@ class AuthManager:
                     storage_state=str(self.storage_state_file)
                 )
                 page = context.new_page()
-                page.goto(url, wait_until="domcontentloaded", timeout=15000)
-                page.wait_for_timeout(2000)
+
+                # 使用 networkidle 等待 SPA 完全加载
+                page.goto(url, wait_until="networkidle", timeout=30000)
+                page.wait_for_timeout(3000)  # 额外等待 JS 渲染
 
                 # 通用登录检测
                 url_now = page.url
                 if "/login" in url_now or "/auth" in url_now or "/signin" in url_now:
-                    browser.close()
-                    return False
-
-                # 检查用户相关元素
-                has_user = page.locator(
-                    '[class*="avatar"], [class*="user"], [class*="profile"], '
-                    'img[alt*="头像"], img[alt*="avatar"], img[alt*="User"], '
-                    'button:has-text("退出"), button:has-text("Log out"), '
-                    '[class*="logout"], [class*="account"]'
-                ).count() > 0
-
-                token = page.evaluate(
-                    "() => localStorage.getItem('token') || "
-                    "localStorage.getItem('access_token') || "
-                    "sessionStorage.getItem('token') || "
-                    "localStorage.getItem('refresh_token') || ''"
-                )
+                    result = False
+                else:
+                    result = self._check_login_indicators(page)
 
                 browser.close()
-                return has_user or bool(token)
-        except Exception:
-            return False
+        except Exception as e:
+            print(f"[{self.platform}] Login check warning: {e}")
+            result = False
+
+        return result
 
     def login_interactive(self, browser_type: str = "chromium", login_url: str = "",
                           platform_name: str = ""):
@@ -147,6 +146,7 @@ class AuthManager:
         start_time = time.time()
         check_interval = 2.0
         last_status = ""
+        login_success = False
 
         try:
             while True:
@@ -158,8 +158,10 @@ class AuthManager:
                 is_logged_in = self._check_login_indicators(page)
 
                 if is_logged_in:
-                    print("\n检测到登录成功！正在保存状态并关闭浏览器...")
-                    page.wait_for_timeout(2000)
+                    login_success = True
+                    print("\n检测到登录成功！等待状态稳定...")
+                    # 等待更长时间确保 cookie/token 完全写入
+                    page.wait_for_timeout(5000)
                     break
 
                 status = f"等待登录中... ({int(elapsed)}s/{timeout_seconds}s)"
@@ -176,10 +178,19 @@ class AuthManager:
         except Exception as e:
             print(f"\n检测过程出错: {e}")
         finally:
+            # 保存 storage state
             try:
+                if login_success:
+                    # 登录成功后刷新一次再保存，确保所有 cookie 同步
+                    try:
+                        page.reload(wait_until="networkidle", timeout=15000)
+                        page.wait_for_timeout(2000)
+                    except Exception:
+                        pass
                 context.storage_state(path=str(self.storage_state_file))
-            except Exception:
-                pass
+                print("登录状态已保存。")
+            except Exception as e:
+                print(f"保存登录状态时出错: {e}")
             try:
                 browser.close()
             except Exception:
@@ -192,35 +203,70 @@ class AuthManager:
             if "/login" in url or "/auth" in url or "/signin" in url:
                 return False
 
+            # 1. 检查 localStorage / sessionStorage 中的各种 token
             token = page.evaluate(
-                "() => localStorage.getItem('token') || "
-                "localStorage.getItem('access_token') || "
-                "sessionStorage.getItem('token') || "
-                "localStorage.getItem('refresh_token') || ''"
+                "() => {"
+                "  const keys = ['token','access_token','refresh_token','jwt','auth_token',"
+                "    'user_token','api_key','credential','session','ds_token','ds_auth'];"
+                "  for (const k of keys) {"
+                "    const v = localStorage.getItem(k) || sessionStorage.getItem(k);"
+                "    if (v && v.length > 8) return v;"
+                "  }"
+                "  return '';"
+                "}"
             )
-            if token and len(str(token)) > 10:
+            if token and len(str(token)) > 8:
                 return True
 
+            # 2. 检查 document.cookie 中是否包含会话相关 cookie
+            has_session_cookie = page.evaluate(
+                "() => {"
+                "  const c = document.cookie;"
+                "  return c.includes('session') || c.includes('token') ||"
+                "    c.includes('auth') || c.includes('login') ||"
+                "    c.includes('user') || c.includes('ds_') ||"
+                "    c.includes('cf_') || c.includes('_cfr');"
+                "}"
+            )
+            if has_session_cookie:
+                return True
+
+            # 3. 检查用户相关 DOM 元素
             has_user = page.locator(
                 '[class*="avatar"], [class*="user-name"], [class*="profile"], '
                 'img[alt*="头像"], img[alt*="avatar"], img[alt*="User"], '
                 '[class*="logout"], button:has-text("退出"), button:has-text("Log out"), '
-                '[class*="account"]'
+                '[class*="account"], [class*="user-menu"]'
             ).count() > 0
             if has_user:
                 return True
 
+            # 4. 检查是否有聊天输入框且没有登录按钮（已登录特征）
             has_chat_ui = page.locator(
                 '[class*="chat-input"], [class*="message-input"], '
-                'textarea[placeholder], [class*="conversation-list"]'
+                'textarea[placeholder], [class*="conversation-list"], '
+                '[class*="new-chat"], button:has-text("New chat")'
             ).count() > 0
             has_login_btn = page.locator(
                 'button:has-text("登录"), a:has-text("登录"), '
                 'button:has-text("Log in"), a:has-text("Log in"), '
-                '[class*="login-btn"]'
+                'button:has-text("Sign in"), a:has-text("Sign in"), '
+                '[class*="login-btn"], [class*="login-button"]'
             ).count() > 0
             if has_chat_ui and not has_login_btn:
                 return True
+
+            # 5. 检查页面是否包含已登录特有的文本
+            page_text = page.locator("body").inner_text(timeout=2000)
+            page_text_lower = page_text.lower()
+            logged_in_markers = [
+                "new chat", "new conversation", "start chat",
+                "退出", "log out", "logout", "settings", "设置",
+            ]
+            if any(m in page_text_lower for m in logged_in_markers):
+                # 同时要确认没有登录按钮
+                if not has_login_btn:
+                    return True
 
             return False
         except Exception:
