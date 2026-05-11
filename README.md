@@ -4,7 +4,7 @@
 
 ## 更新日志
 
-- **2026-5-12 dev**：支持 DeepSeek 和 ChatGPT 多平台
+- **2026-5-12 v0.3 Beta**：部分支持 DeepSeek 和 ChatGPT 多平台；修复 list_sessions 和登陆的部分 BUG
 - **2026-5-12 v0.2 Beta**：支持读取更多聊天记录；修复中文乱码和编码问题
 - **2026-5-11 v0.1 Beta**：支持基础功能
 
