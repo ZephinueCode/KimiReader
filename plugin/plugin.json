@@ -7,7 +7,7 @@
     {
       "name": "kimi_login_status",
       "description": "检查KimiReader浏览器自动化的登录状态。返回是否已登录、cookies存储位置等信息。",
-      "command": ["python3", "scripts/kimireader_browser.py"],
+      "command": ["python", "scripts/kimireader_browser.py"],
       "parameters": {
         "type": "object",
         "properties": {
@@ -23,7 +23,7 @@
     {
       "name": "kimi_login",
       "description": "打开浏览器窗口，让用户在kimi.moonshot.cn手动登录。登录成功后会保存cookie和storage状态，供后续自动拉取使用。支持force参数强制重新登录。",
-      "command": ["python3", "scripts/kimireader_browser.py"],
+      "command": ["python", "scripts/kimireader_browser.py"],
       "parameters": {
         "type": "object",
         "properties": {
@@ -50,7 +50,7 @@
     {
       "name": "kimi_logout",
       "description": "清除保存的Kimi登录状态（cookies和storage state）。",
-      "command": ["python3", "scripts/kimireader_browser.py"],
+      "command": ["python", "scripts/kimireader_browser.py"],
       "parameters": {
         "type": "object",
         "properties": {
@@ -66,7 +66,7 @@
     {
       "name": "list_chat_sessions",
       "description": "列出网页版Kimi（kimi.moonshot.cn）上的历史对话列表。需要先完成登录。返回每个会话的session_id、title和url。",
-      "command": ["python3", "scripts/kimireader_browser.py"],
+      "command": ["python", "scripts/kimireader_browser.py"],
       "parameters": {
         "type": "object",
         "properties": {
@@ -87,7 +87,7 @@
     {
       "name": "import_chat_history",
       "description": "从网页版Kimi导入指定对话的完整聊天记录。支持通过index（从list结果中的序号）、session_id或url指定对话。返回结构化消息列表和full_text拼接文本。",
-      "command": ["python3", "scripts/kimireader_browser.py"],
+      "command": ["python", "scripts/kimireader_browser.py"],
       "parameters": {
         "type": "object",
         "properties": {
@@ -120,7 +120,7 @@
     {
       "name": "list_chat_files",
       "description": "（兼容模式）在本地常见目录查找之前导出的Kimi聊天记录文件。",
-      "command": ["python3", "scripts/read_chat.py"],
+      "command": ["python", "scripts/read_chat.py"],
       "parameters": {
         "type": "object",
         "properties": {
@@ -136,7 +136,7 @@
     {
       "name": "read_chat_file",
       "description": "（兼容模式）读取本地指定的Kimi聊天记录文件（JSON/Markdown格式）。",
-      "command": ["python3", "scripts/read_chat.py"],
+      "command": ["python", "scripts/read_chat.py"],
       "parameters": {
         "type": "object",
         "properties": {

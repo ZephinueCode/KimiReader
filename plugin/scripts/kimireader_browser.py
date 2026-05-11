@@ -14,11 +14,6 @@ import sys
 import os
 from pathlib import Path
 
-# 将browser_agent模块加入路径
-SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_DIR = SCRIPT_DIR.parent.parent
-sys.path.insert(0, str(PROJECT_DIR))
-
 try:
     from browser_agent.auth import AuthManager
     from browser_agent.extractor import ChatExtractor
@@ -30,6 +25,13 @@ except ImportError as e:
 
 
 def main():
+    # Windows QoL: force UTF-8 stdout to prevent Chinese garbled text
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    elif sys.platform == "win32":
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+
     params = json.load(sys.stdin)
     action = params.get("action", "status")
     browser_type = params.get("browser_type", "chromium")
@@ -117,7 +119,9 @@ def main():
     except Exception as e:
         result = {"error": str(e), "action": action}
 
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    output = json.dumps(result, ensure_ascii=False, indent=2)
+    sys.stdout.buffer.write(output.encode("utf-8"))
+    sys.stdout.buffer.write(b"\n")
 
 
 if __name__ == "__main__":
