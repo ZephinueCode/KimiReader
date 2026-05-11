@@ -1,12 +1,12 @@
 {
   "name": "kimireader",
-  "version": "2.0.0",
-  "description": "从网页版Kimi自动拉取、读取聊天记录，支持总结和代码方案框架生成。基于Playwright浏览器自动化。",
+  "version": "3.0.0",
+  "description": "Multi-platform chat history importer: Kimi, DeepSeek, ChatGPT. Auto-login, scroll-to-load, and code plan generation.",
   "config_file": "config.json",
   "tools": [
     {
       "name": "kimi_login_status",
-      "description": "检查KimiReader浏览器自动化的登录状态。返回是否已登录、cookies存储位置等信息。",
+      "description": "Check login status for a platform. Returns is_logged_in, state_dir, etc.",
       "command": ["python", "scripts/kimireader_browser.py"],
       "parameters": {
         "type": "object",
@@ -14,7 +14,13 @@
           "action": {
             "type": "string",
             "enum": ["status"],
-            "description": "操作类型"
+            "description": "Action type"
+          },
+          "platform": {
+            "type": "string",
+            "enum": ["kimi", "deepseek", "chatgpt"],
+            "default": "kimi",
+            "description": "Platform to check"
           }
         },
         "required": ["action"]
@@ -22,7 +28,7 @@
     },
     {
       "name": "kimi_login",
-      "description": "打开浏览器窗口，让用户在kimi.moonshot.cn手动登录。登录成功后会保存cookie和storage状态，供后续自动拉取使用。支持force参数强制重新登录。",
+      "description": "Open browser for interactive login. Auto-clicks login button and auto-closes after successful login. Supports Kimi, DeepSeek, ChatGPT.",
       "command": ["python", "scripts/kimireader_browser.py"],
       "parameters": {
         "type": "object",
@@ -30,18 +36,24 @@
           "action": {
             "type": "string",
             "enum": ["login"],
-            "description": "操作类型"
+            "description": "Action type"
+          },
+          "platform": {
+            "type": "string",
+            "enum": ["kimi", "deepseek", "chatgpt"],
+            "default": "kimi",
+            "description": "Platform to login"
           },
           "force": {
             "type": "boolean",
             "default": false,
-            "description": "是否强制重新登录（即使已有有效状态）"
+            "description": "Force re-login even if already logged in"
           },
           "browser_type": {
             "type": "string",
             "enum": ["chromium", "firefox", "webkit"],
             "default": "chromium",
-            "description": "浏览器类型"
+            "description": "Browser type"
           }
         },
         "required": ["action"]
@@ -49,7 +61,7 @@
     },
     {
       "name": "kimi_logout",
-      "description": "清除保存的Kimi登录状态（cookies和storage state）。",
+      "description": "Clear saved login state for a platform.",
       "command": ["python", "scripts/kimireader_browser.py"],
       "parameters": {
         "type": "object",
@@ -57,7 +69,13 @@
           "action": {
             "type": "string",
             "enum": ["logout"],
-            "description": "操作类型"
+            "description": "Action type"
+          },
+          "platform": {
+            "type": "string",
+            "enum": ["kimi", "deepseek", "chatgpt"],
+            "default": "kimi",
+            "description": "Platform to logout"
           }
         },
         "required": ["action"]
@@ -65,7 +83,7 @@
     },
     {
       "name": "list_chat_sessions",
-      "description": "列出网页版Kimi（kimi.moonshot.cn）上的历史对话列表。需要先完成登录。返回每个会话的session_id、title和url。",
+      "description": "List chat history sessions from a platform. Supports up to 30 sessions with auto-expand and scroll-to-load. Requires prior login.",
       "command": ["python", "scripts/kimireader_browser.py"],
       "parameters": {
         "type": "object",
@@ -73,12 +91,18 @@
           "action": {
             "type": "string",
             "enum": ["list"],
-            "description": "操作类型"
+            "description": "Action type"
+          },
+          "platform": {
+            "type": "string",
+            "enum": ["kimi", "deepseek", "chatgpt"],
+            "default": "kimi",
+            "description": "Platform to list sessions from"
           },
           "headless": {
             "type": "boolean",
             "default": true,
-            "description": "是否使用无头模式（后台运行，不显示浏览器窗口）"
+            "description": "Run in headless mode"
           }
         },
         "required": ["action"]
@@ -86,7 +110,7 @@
     },
     {
       "name": "import_chat_history",
-      "description": "从网页版Kimi导入指定对话的完整聊天记录。支持通过index（从list结果中的序号）、session_id或url指定对话。返回结构化消息列表和full_text拼接文本。",
+      "description": "Import full chat history from a platform. Select by index (from list), session_id, or url. Requires prior login.",
       "command": ["python", "scripts/kimireader_browser.py"],
       "parameters": {
         "type": "object",
@@ -94,24 +118,30 @@
           "action": {
             "type": "string",
             "enum": ["extract"],
-            "description": "操作类型"
+            "description": "Action type"
+          },
+          "platform": {
+            "type": "string",
+            "enum": ["kimi", "deepseek", "chatgpt"],
+            "default": "kimi",
+            "description": "Platform to import from"
           },
           "index": {
             "type": "integer",
-            "description": "从list_chat_sessions结果中选择的序号（0-based）。如果提供了session_id或url，此参数会被忽略。"
+            "description": "0-based index from list_chat_sessions result. Ignored if session_id or url is provided."
           },
           "session_id": {
             "type": "string",
-            "description": "会话ID（如cxxxxxx）。如果不提供，则需要提供index或url。"
+            "description": "Session ID"
           },
           "url": {
             "type": "string",
-            "description": "对话的完整URL。如果不提供，则需要提供index或session_id。"
+            "description": "Full conversation URL"
           },
           "headless": {
-            "type": "string",
+            "type": "boolean",
             "default": true,
-            "description": "是否使用无头模式"
+            "description": "Run in headless mode"
           }
         },
         "required": ["action"]
@@ -119,7 +149,7 @@
     },
     {
       "name": "list_chat_files",
-      "description": "（兼容模式）在本地常见目录查找之前导出的Kimi聊天记录文件。",
+      "description": "(Legacy) Find locally exported chat history files.",
       "command": ["python", "scripts/read_chat.py"],
       "parameters": {
         "type": "object",
@@ -127,7 +157,7 @@
           "action": {
             "type": "string",
             "enum": ["list"],
-            "description": "操作类型"
+            "description": "Action type"
           }
         },
         "required": ["action"]
@@ -135,7 +165,7 @@
     },
     {
       "name": "read_chat_file",
-      "description": "（兼容模式）读取本地指定的Kimi聊天记录文件（JSON/Markdown格式）。",
+      "description": "(Legacy) Read a local chat history file (JSON/Markdown).",
       "command": ["python", "scripts/read_chat.py"],
       "parameters": {
         "type": "object",
@@ -143,11 +173,11 @@
           "action": {
             "type": "string",
             "enum": ["read"],
-            "description": "操作类型"
+            "description": "Action type"
           },
           "file_path": {
             "type": "string",
-            "description": "聊天记录文件路径"
+            "description": "Path to chat history file"
           }
         },
         "required": ["action"]
